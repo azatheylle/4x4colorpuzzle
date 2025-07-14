@@ -4,6 +4,9 @@ import copy
 from collections import deque
 import heapq
 import itertools
+import functools
+import multiprocessing
+import time
 
 CELL_SIZE = 60
 GRID_SIZE = 6  # 6x6 total: outer ring pistons, inner 4x4 puzzle
@@ -155,6 +158,11 @@ class PuzzleGame:
         self.extended = {}
         self.piston_heads = {}  # Tracks which cells are currently piston heads: (r, c) -> (piston_r, piston_c)
 
+        # --- Setup mode state ---
+        self.setup_mode = tk.StringVar(value="Random")
+        self.manual_setup_active = False
+        self.manual_blocks = {}
+
         self.place_pistons()
         self.place_blocks_random()
         self.draw_grid()
@@ -163,12 +171,41 @@ class PuzzleGame:
         self.win_label = tk.Label(root, text="", font=("Arial", 16))
         self.win_label.pack()
 
+        # --- Setup mode controls ---
+        frame = tk.Frame(root)
+        frame.pack()
+        tk.Radiobutton(frame, text="Random", variable=self.setup_mode, value="Random").pack(side="left")
+        tk.Radiobutton(frame, text="Manual", variable=self.setup_mode, value="Manual").pack(side="left")
+        self.start_button = tk.Button(frame, text="Start", command=self.start_game)
+        self.start_button.pack(side="left")
+
         self.solve_button = tk.Button(root, text="Solve", command=self.show_solution)
         self.solve_button.pack()
 
         self.solution_label = tk.Label(root, text="", font=("Arial", 12), justify="left")
         self.solution_label.pack()
         self.current_solution = None
+    def start_game(self):
+        if self.setup_mode.get() == "Random":
+            self.place_blocks_random()
+            self.manual_setup_active = False
+            self.draw_grid()
+            self.win_label.config(text="Random setup complete. Play!")
+        else:
+            if not self.manual_setup_active:
+                # Enter manual setup mode
+                for r in range(1, 5):
+                    for c in range(1, 5):
+                        if r == 1 or r == 4 or c == 1 or c == 4:
+                            self.grid[r][c] = ''
+                self.manual_setup_active = True
+                self.draw_grid()
+                self.win_label.config(text="Click edge cells to set blocks, then press Start again.")
+            else:
+                # Lock in manual setup
+                self.manual_setup_active = False
+                self.draw_grid()
+                self.win_label.config(text="Manual setup complete. Play!")
 
     def place_pistons(self):
         for pos, dir_char in PISTON_DIRS.items():
@@ -311,9 +348,36 @@ class PuzzleGame:
             self.canvas.create_line(i * CELL_SIZE, 0, i * CELL_SIZE, GRID_SIZE * CELL_SIZE, fill='black')
             self.canvas.create_line(0, i * CELL_SIZE, GRID_SIZE * CELL_SIZE, i * CELL_SIZE, fill='black')
 
+    def heuristic(self, grid):
+        # Admissible heuristic: sum of min Manhattan distances from each block to any of its group positions
+        group_targets = {
+            'Y': [(1, 1), (1, 2), (2, 1)],
+            'B': [(1, 4), (1, 3), (2, 4)],
+            'R': [(4, 1), (3, 1), (4, 2)],
+            'G': [(4, 4), (3, 4), (4, 3)],
+        }
+        dist_penalty = 0
+        for color, char in COLOR_CHARS.items():
+            for r in range(1, 5):
+                for c in range(1, 5):
+                    if grid[r][c] == char:
+                        min_dist = min(abs(r - gr) + abs(c - gc) for (gr, gc) in group_targets[char])
+                        dist_penalty += min_dist
+        return dist_penalty
+
     def on_click(self, event):
         c = event.x // CELL_SIZE
         r = event.y // CELL_SIZE
+        if self.manual_setup_active:
+            # Only allow edge positions
+            if 1 <= r <= 4 and 1 <= c <= 4 and (r == 1 or r == 4 or c == 1 or c == 4):
+                current = self.grid[r][c]
+                color_cycle = [''] + [COLOR_CHARS[color] for color in COLORS]
+                idx = color_cycle.index(current) if current in color_cycle else 0
+                next_color = color_cycle[(idx + 1) % len(color_cycle)]
+                self.grid[r][c] = next_color
+                self.draw_grid()
+            return
         if (r, c) not in PISTON_DIRS:
             return
         if self.extended[(r, c)]:
@@ -522,46 +586,7 @@ class PuzzleGame:
                 if grid[r][c] != COLOR_CHARS[color]:
                     return False
         return True
-
-    def solve_puzzle(self):
-        initial_grid = copy.deepcopy(self.grid)
-        initial_extended = copy.deepcopy(self.extended)
-        initial_piston_heads = copy.deepcopy(self.piston_heads)
-        heap = []
-        counter = itertools.count()  # Unique sequence count
-        # (priority, moves_so_far, counter, grid, extended, piston_heads, path)
-        heapq.heappush(heap, (self.heuristic(initial_grid), 0, next(counter), initial_grid, initial_extended, initial_piston_heads, []))
-        visited = set()
-        visited.add((serialize_grid(initial_grid), tuple(sorted(initial_extended.items())), tuple(sorted(initial_piston_heads.items()))))
-        while heap:
-            _, moves_so_far, _, grid, extended, piston_heads, path = heapq.heappop(heap)
-            if self.is_win(grid):
-                return path
-            for move in self.get_possible_moves(grid, extended, piston_heads):
-                new_grid, new_extended, new_piston_heads = self.apply_move(grid, extended, piston_heads, move)
-                key = (serialize_grid(new_grid), tuple(sorted(new_extended.items())), tuple(sorted(new_piston_heads.items())))
-                if key not in visited:
-                    visited.add(key)
-                    priority = moves_so_far + 1 + self.heuristic(new_grid)
-                    heapq.heappush(heap, (priority, moves_so_far + 1, next(counter), new_grid, new_extended, new_piston_heads, path + [move]))
-        return None
-
-    def heuristic(self, grid):
-        goal_corners = {
-            'Y': (1, 1),
-            'B': (1, 4),
-            'R': (4, 1),
-            'G': (4, 4),
-        }
-        dist = 0
-        for r in range(1, 5):
-            for c in range(1, 5):
-                cell = grid[r][c]
-                if cell in goal_corners:
-                    goal_r, goal_c = goal_corners[cell]
-                    dist += abs(r - goal_r) + abs(c - goal_c)
-        return dist
-
+    
     def piston_name(self, pos):
         r, c = pos
         if r == 0:
@@ -574,6 +599,230 @@ class PuzzleGame:
             return f"right{r}"
         else:
             return f"({r},{c})"
+
+
+    def compact_state_key(self, grid_tuple, ext_mask):
+        # grid_tuple: flat tuple of 36 chars (row-major)
+        # ext_mask: 16-bit int, 1 if piston extended
+        return (grid_tuple, ext_mask)
+
+    @functools.lru_cache(maxsize=32768)
+    def cached_heuristic(self, grid_tuple, ext_mask):
+        # grid_tuple: flat tuple of 36 chars
+        grid = [list(grid_tuple[i*GRID_SIZE:(i+1)*GRID_SIZE]) for i in range(GRID_SIZE)]
+        dist = self.heuristic(grid) + bin(ext_mask).count('1')
+        return dist
+
+    def solve_puzzle(self, max_depth=60, use_multiprocessing=True):
+        start_time = time.time()
+        # Use fast shallow copies for small structures
+        initial_grid = [row[:] for row in self.grid]
+        initial_extended = self.extended.copy()
+        initial_piston_heads = self.piston_heads.copy()
+        heap = []
+        counter = itertools.count()  # Unique sequence count
+        # (priority, moves_so_far, counter, grid, extended, piston_heads, path)
+        heapq.heappush(heap, (self.heuristic(initial_grid), 0, next(counter), initial_grid, initial_extended, initial_piston_heads, []))
+        visited = set()
+        # Use a flat tuple for the grid in the visited key for faster hashing
+        def flat_grid(grid):
+            return tuple(cell for row in grid for cell in row)
+        visited.add((flat_grid(initial_grid), tuple(sorted(initial_extended.items())), tuple(sorted(initial_piston_heads.items()))))
+        node_count = 0
+        while heap:
+            _, moves_so_far, _, grid, extended, piston_heads, path = heapq.heappop(heap)
+            node_count += 1
+            if node_count % 1000 == 0:
+                elapsed = time.time() + 1e-9 - start_time
+                print(f"[Solver] {node_count} nodes expanded in {elapsed:.2f} seconds...", flush=True)
+            if moves_so_far > max_depth:
+                continue
+            if self.is_win(grid):
+                elapsed = time.time() - start_time
+                print(f"[Solver] Solution found in {elapsed:.2f} seconds, {moves_so_far} moves.", flush=True)
+                return path
+            for move in self.get_possible_moves(grid, extended, piston_heads):
+                # Use fast shallow copies for small structures
+                new_grid = [row[:] for row in grid]
+                new_extended = extended.copy()
+                new_piston_heads = piston_heads.copy()
+                new_grid, new_extended, new_piston_heads = self.apply_move(new_grid, new_extended, new_piston_heads, move)
+                key = (flat_grid(new_grid), tuple(sorted(new_extended.items())), tuple(sorted(new_piston_heads.items())))
+                if key not in visited:
+                    visited.add(key)
+                    priority = moves_so_far + 1 + self.heuristic(new_grid)
+                    heapq.heappush(heap, (priority, moves_so_far + 1, next(counter), new_grid, new_extended, new_piston_heads, path + [move]))
+        elapsed = time.time() - start_time
+        print(f"[Solver] No solution found in {elapsed:.2f} seconds.", flush=True)
+        return None
+
+    def get_possible_moves_immutable(self, grid_tuple, ext_mask, piston_heads_frozen):
+        # grid_tuple: flat tuple of 36 chars
+        # ext_mask: 16-bit int
+        # piston_heads_frozen: frozenset of ((hr, hc), (pr, pc))
+        moves = []
+        piston_heads = dict(piston_heads_frozen)
+        piston_idx_map = {k: i for i, k in enumerate(sorted(PISTON_DIRS.keys()))}
+        for (r, c), dir_char in PISTON_DIRS.items():
+            idx = piston_idx_map[(r, c)]
+            is_ext = (ext_mask >> idx) & 1
+            dr, dc = DIR_OFFSETS[dir_char]
+            head_r, head_c = r + dr, c + dc
+            if not is_ext:
+                if not (1 <= head_r <= 4 and 1 <= head_c <= 4):
+                    continue
+                if (head_r, head_c) in piston_heads:
+                    continue
+                cell = grid_tuple[head_r * GRID_SIZE + head_c]
+                if cell == '.' or cell == '':
+                    moves.append(('extend', r, c))
+                else:
+                    # Try to push chain
+                    positions = []
+                    rr, cc = head_r, head_c
+                    while True:
+                        if not (1 <= rr <= 4 and 1 <= cc <= 4):
+                            positions = None
+                            break
+                        cell2 = grid_tuple[rr * GRID_SIZE + cc]
+                        if (rr, cc) in piston_heads:
+                            positions = None
+                            break
+                        if cell2 in COLOR_CHARS.values():
+                            positions.append((rr, cc))
+                            rr += dr
+                            cc += dc
+                            continue
+                        elif cell2 == '.' or cell2 == '':
+                            break
+                        else:
+                            positions = None
+                            break
+                    if positions is not None:
+                        moves.append(('extend', r, c))
+            else:
+                moves.append(('retract', r, c))
+        return moves
+
+    def apply_move_immutable(self, grid_tuple, ext_mask, piston_heads_frozen, move):
+        # Returns new_grid_tuple, new_ext_mask, new_piston_heads_frozen
+        action, r, c = move
+        piston_idx_map = {k: i for i, k in enumerate(sorted(PISTON_DIRS.keys()))}
+        dir_char = self.grid[r][c]  # grid layout is static for pistons
+        dr, dc = DIR_OFFSETS[dir_char]
+        head_r, head_c = r + dr, c + dc
+        grid = [list(grid_tuple[i*GRID_SIZE:(i+1)*GRID_SIZE]) for i in range(GRID_SIZE)]
+        extended = {}
+        for i, k in enumerate(sorted(PISTON_DIRS.keys())):
+            extended[k] = bool((ext_mask >> i) & 1)
+        piston_heads = dict(piston_heads_frozen)
+        if action == 'extend':
+            if grid[head_r][head_c] == '.' or grid[head_r][head_c] == '':
+                extended[(r, c)] = True
+                piston_heads[(head_r, head_c)] = (r, c)
+            else:
+                # Push chain
+                chain = []
+                rr, cc = head_r, head_c
+                while True:
+                    if not (1 <= rr <= 4 and 1 <= cc <= 4):
+                        return grid_tuple, ext_mask, piston_heads_frozen  # Invalid
+                    cell2 = grid[rr][cc]
+                    if (rr, cc) in piston_heads:
+                        return grid_tuple, ext_mask, piston_heads_frozen
+                    if cell2 in COLOR_CHARS.values():
+                        chain.append((rr, cc))
+                        rr += dr
+                        cc += dc
+                        continue
+                    elif cell2 == '.' or cell2 == '':
+                        break
+                    else:
+                        return grid_tuple, ext_mask, piston_heads_frozen
+                for rr, cc in reversed(chain):
+                    new_r, new_c = rr + dr, cc + dc
+                    grid[new_r][new_c] = grid[rr][cc]
+                    grid[rr][cc] = '.'
+                extended[(r, c)] = True
+                piston_heads[(head_r, head_c)] = (r, c)
+        elif action == 'retract':
+            if (head_r, head_c) in piston_heads:
+                del piston_heads[(head_r, head_c)]
+            sticky_r, sticky_c = head_r + dr, head_c + dc
+            if 1 <= sticky_r <= 4 and 1 <= sticky_c <= 4:
+                block = grid[sticky_r][sticky_c]
+                if block in COLOR_CHARS.values():
+                    grid[head_r][head_c] = block
+                    grid[sticky_r][sticky_c] = '.'
+                else:
+                    grid[head_r][head_c] = '.'
+            else:
+                grid[head_r][head_c] = '.'
+            extended[(r, c)] = False
+        # Convert back to compact types
+        new_grid_tuple = tuple(cell if cell else '.' for row in grid for cell in row)
+        new_ext_mask = 0
+        for i, k in enumerate(sorted(PISTON_DIRS.keys())):
+            if extended[k]:
+                new_ext_mask |= (1 << i)
+        new_piston_heads_frozen = frozenset(piston_heads.items())
+        return new_grid_tuple, new_ext_mask, new_piston_heads_frozen
+
+    def solve_puzzle_parallel(self, max_depth=60, n_workers=2):
+        import time
+        start_time = time.time()
+        # Optional: Use multiprocessing to parallelize the search (for advanced users)
+        # This is a simple parallel wrapper that launches several processes with different first moves
+        initial_grid = copy.deepcopy(self.grid)
+        initial_extended = copy.deepcopy(self.extended)
+        initial_piston_heads = copy.deepcopy(self.piston_heads)
+        first_moves = self.get_possible_moves(initial_grid, initial_extended, initial_piston_heads)
+        if not first_moves:
+            return None
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            results = []
+            for move in first_moves:
+                args = (self, initial_grid, initial_extended, initial_piston_heads, move, max_depth)
+                results.append(pool.apply_async(_worker_solve_branch, args))
+            for r in results:
+                res = r.get()
+                if res:
+                    elapsed = time.time() - start_time
+                    print(f"[Parallel Solver] Solution found in {elapsed:.2f} seconds.")
+                    return res
+        elapsed = time.time() - start_time
+        print(f"[Parallel Solver] No solution found in {elapsed:.2f} seconds.")
+        return None
+
+def _worker_solve_branch(self, grid, extended, piston_heads, move, max_depth):
+    import time
+    start_time = time.time()
+    # Worker for parallel solve: do the first move, then run normal solve_puzzle
+    new_grid, new_extended, new_piston_heads = self.apply_move(grid, extended, piston_heads, move)
+    heap = []
+    counter = itertools.count()
+    state_key = self.compact_state_key(new_grid, new_extended)
+    heapq.heappush(heap, (self.cached_heuristic(*state_key), 1, next(counter), new_grid, new_extended, new_piston_heads, [move]))
+    visited = set()
+    visited.add(state_key)
+    while heap:
+        _, moves_so_far, _, grid, extended, piston_heads, path = heapq.heappop(heap)
+        if moves_so_far > max_depth:
+            continue
+        if self.is_win(grid):
+            elapsed = time.time() - start_time
+            print(f"[Worker] Solution found in {elapsed:.2f} seconds, {moves_so_far} moves.")
+            return path
+        for move in self.get_possible_moves(grid, extended, piston_heads):
+            new_grid, new_extended, new_piston_heads = self.apply_move(grid, extended, piston_heads, move)
+            key = self.compact_state_key(new_grid, new_extended)
+            if key not in visited:
+                visited.add(key)
+                priority = moves_so_far + 1 + self.cached_heuristic(*key)
+                heapq.heappush(heap, (priority, moves_so_far + 1, next(counter), new_grid, new_extended, new_piston_heads, path + [move]))
+    elapsed = time.time() - start_time
+    print(f"[Worker] No solution found in {elapsed:.2f} seconds.")
+    return None
 
 def main():
     root = tk.Tk()
