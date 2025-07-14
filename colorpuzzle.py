@@ -1,10 +1,22 @@
 import os
 from multiprocessing import Lock
-
+import pickle
+import tkinter as tk
+import random
+import copy
+import heapq
+import itertools
+import functools
+import multiprocessing
 import time
+
+# put this in a batch file to run with pypy / in a notepad file with .bat in the end
+# @echo off
+# "C:\Users\ylle9\Downloads\pypy3.11-v7.3.20-win64\pypy.exe" "c:\Users\ylle9\OneDrive\Dokument\GitHub\tdm\colorpuzzle.py"
+# pause
+
 # Standalone mining worker for multiprocessing (no Tkinter objects!)
 def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
-    import random, pickle, itertools, heapq, copy
     # Helper functions (copied from class, but no self)
     def get_possible_moves(grid, extended, piston_heads):
         moves = []
@@ -106,6 +118,7 @@ def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
             if key not in pattern_library or len(pattern_library[key]) > len(path) - i:
                 pattern_library[key] = path[i:]
 
+    
     TIMEOUT = 120  # seconds
     while mining_flag.value:
         start_time = time.time()
@@ -123,19 +136,10 @@ def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
                     continue
                 if r == 1 or r == 4 or c == 1 or c == 4:
                     edge_positions.append((r, c))
-        corner_colors = {
-            (1, 1): 'yellow',
-            (1, 4): 'blue',
-            (4, 1): 'red',
-            (4, 4): 'green',
-        }
-        for corner_pos, color in corner_colors.items():
-            grid[corner_pos[0]][corner_pos[1]] = COLOR_CHARS[color]
-            if corner_pos in edge_positions:
-                edge_positions.remove(corner_pos)
+        # Fill all 12 edge positions (including corners) with 3 of each color
         remaining_blocks = []
         for color in COLORS:
-            remaining_blocks.extend([COLOR_CHARS[color]] * 2)
+            remaining_blocks.extend([COLOR_CHARS[color]] * 3)
         random.shuffle(edge_positions)
         for i, pos in enumerate(edge_positions[:len(remaining_blocks)]):
             grid[pos[0]][pos[1]] = remaining_blocks[i]
@@ -164,6 +168,9 @@ def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
         state_path = []
         found = False
         while heap:
+            # Check mining_flag frequently for fast stop
+            if not mining_flag.value:
+                return
             # Failsafe: break if timeout exceeded
             if time.time() - start_time > TIMEOUT:
                 if worker_id == 0:
@@ -193,6 +200,9 @@ def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
                 found = True
                 break
             for move in get_possible_moves(grid, extended, piston_heads):
+                # Check mining_flag before expanding children
+                if not mining_flag.value:
+                    return
                 new_grid = [row[:] for row in grid]
                 new_extended = extended.copy()
                 new_piston_heads = piston_heads.copy()
@@ -201,38 +211,56 @@ def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
                 if new_key not in visited:
                     visited.add(new_key)
                     heapq.heappush(heap, (moves_so_far + 1 + heuristic(new_grid), moves_so_far + 1, next(counter), new_grid, new_extended, new_piston_heads, path + [move]))
-        if found:
+        if found and mining_flag.value:
             # Save all patterns from this solution
             # Use a file lock to avoid concurrent writes
-            with lock:
+            elapsed = time.time() - start_time
+            # Retry acquiring the lock if not available
+            got_lock = False
+            while not got_lock and mining_flag.value:
+                got_lock = lock.acquire(timeout=1)
+                if not got_lock:
+                    time.sleep(0.1)
+            if not mining_flag.value:
+                if got_lock:
+                    lock.release()
+                return
+            try:
+                # Atomic read-modify-write with lock held throughout
                 if os.path.exists(pattern_library_file):
-                    with open(pattern_library_file, "rb") as f:
-                        try:
+                    try:
+                        with open(pattern_library_file, "rb") as f:
                             pattern_library = pickle.load(f)
-                        except Exception:
-                            pattern_library = {}
+                    except FileNotFoundError:
+                        print(f"[Mining] Worker {worker_id}: Pattern library file not found. Starting fresh.")
+                        pattern_library = {}
+                    except EOFError:
+                        print(f"[Mining] Worker {worker_id}: Pattern library file is empty or incomplete. Starting fresh.")
+                        pattern_library = {}
+                    except pickle.UnpicklingError:
+                        print(f"[Mining] Worker {worker_id}: Pattern library file is corrupted or not a pickle file. Starting fresh.")
+                        pattern_library = {}
+                    except PermissionError:
+                        print(f"[Mining] Worker {worker_id}: Permission denied when accessing pattern library file. Skipping update.")
+                        return
+                    except Exception as e:
+                        print(f"[Mining] Worker {worker_id}: Unexpected error loading pattern library: {e}. Starting fresh.")
+                        pattern_library = {}
                 else:
+                    print(f"[Mining] Worker {worker_id}: Pattern library file does not exist. Starting fresh.")
                     pattern_library = {}
                 add_patterns_from_solution(path, state_path, pattern_library)
-                with open(pattern_library_file, "wb") as f:
-                    pickle.dump(pattern_library, f, protocol=pickle.HIGHEST_PROTOCOL)
-            print(f"[Mining] Worker {worker_id}: Found and saved a solution with {len(path)} moves. Total patterns: {len(pattern_library)}")
-import pickle
-import threading
-import tkinter as tk
-import random
-import copy
-from collections import deque
-import heapq
-import itertools
-import functools
-import multiprocessing
-import time
-
-# put this in a batch file to run with pypy / in a notepad file with .bat in the end
-# @echo off
-# "C:\Users\ylle9\Downloads\pypy3.11-v7.3.20-win64\pypy.exe" "c:\Users\ylle9\OneDrive\Dokument\GitHub\tdm\colorpuzzle.py"
-# pause
+                # Write to a temp file, then atomically replace
+                temp_file = pattern_library_file + ".tmp"
+                try:
+                    with open(temp_file, "wb") as f:
+                        pickle.dump(pattern_library, f, protocol=pickle.HIGHEST_PROTOCOL)
+                    os.replace(temp_file, pattern_library_file)
+                except Exception as e:
+                    print(f"[Mining] Worker {worker_id}: Error saving pattern library: {e}")
+                print(f"[Mining] Worker {worker_id}: Found and saved a solution with {len(path)} moves in {elapsed:.2f} seconds. Total patterns: {len(pattern_library)}")
+            finally:
+                lock.release()
 
 CELL_SIZE = 60
 GRID_SIZE = 6  # 6x6 total: outer ring pistons, inner 4x4 puzzle
@@ -429,7 +457,7 @@ class PuzzleGame:
         self.canvas.grid(row=0, column=0, columnspan=6)
         self.canvas.bind("<Button-1>", self.on_click)
 
-        self.win_label = tk.Label(root, text="Welcome :3", font=("Arial", 14))
+        self.win_label = tk.Label(root, text="Welcome, please wait for library to load :3", font=("Arial", 14))
         self.win_label.grid(row=1, column=0, columnspan=6)
 
         self.solution_label = tk.Label(root, text="", font=("Arial", 12), justify="left")
@@ -460,6 +488,14 @@ class PuzzleGame:
         self.place_pistons()
         self.place_blocks_random()
         self.draw_grid()
+
+        # Load pattern library in a background thread so UI appears immediately
+        import threading
+        print("[Startup] Loading pattern library...")
+        def load_library_bg():
+            self.load_pattern_library()
+            print(f"[Startup] Pattern library loaded with {len(self.pattern_library)} patterns.")
+        threading.Thread(target=load_library_bg, daemon=True).start()
     PATTERN_LIBRARY_FILE = "pattern_library.pkl"
     MINING_WORKERS = 4  # Number of parallel mining processes
 
@@ -468,9 +504,21 @@ class PuzzleGame:
             with open(self.PATTERN_LIBRARY_FILE, "rb") as f:
                 self.pattern_library = pickle.load(f)
             print(f"[PatternLib] Loaded {len(self.pattern_library)} patterns.")
-        except Exception:
+        except FileNotFoundError:
             self.pattern_library = {}
-            print("[PatternLib] No pattern library found, starting fresh.")
+            print(f"[PatternLib] Pattern library file not found: {self.PATTERN_LIBRARY_FILE}. Starting fresh.")
+        except EOFError:
+            self.pattern_library = {}
+            print(f"[PatternLib] Pattern library file is empty or incomplete: {self.PATTERN_LIBRARY_FILE}. Starting fresh.")
+        except pickle.UnpicklingError:
+            self.pattern_library = {}
+            print(f"[PatternLib] Pattern library file is corrupted or not a pickle file: {self.PATTERN_LIBRARY_FILE}. Starting fresh.")
+        except PermissionError:
+            self.pattern_library = {}
+            print(f"[PatternLib] Permission denied when accessing pattern library file: {self.PATTERN_LIBRARY_FILE}. Starting fresh.")
+        except Exception as e:
+            self.pattern_library = {}
+            print(f"[PatternLib] Unexpected error loading pattern library: {e}. Starting fresh.")
 
     def save_pattern_library(self):
         try:
@@ -550,21 +598,10 @@ class PuzzleGame:
                 if r == 1 or r == 4 or c == 1 or c == 4:
                     edge_positions.append((r, c))
 
-        corner_colors = {
-            (1, 1): 'yellow',
-            (1, 4): 'blue',
-            (4, 1): 'red',
-            (4, 4): 'green',
-        }
-
-        for corner_pos, color in corner_colors.items():
-            self.grid[corner_pos[0]][corner_pos[1]] = COLOR_CHARS[color]
-            if corner_pos in edge_positions:
-                edge_positions.remove(corner_pos)
-
+        # Fill all 12 edge tiles (including corners) with 3 of each color
         remaining_blocks = []
         for color in COLORS:
-            remaining_blocks.extend([COLOR_CHARS[color]] * 2)
+            remaining_blocks.extend([COLOR_CHARS[color]] * 3)
 
         random.shuffle(edge_positions)
         for i, pos in enumerate(edge_positions[:len(remaining_blocks)]):
