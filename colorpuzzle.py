@@ -1,3 +1,224 @@
+import os
+from multiprocessing import Lock
+
+import time
+# Standalone mining worker for multiprocessing (no Tkinter objects!)
+def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
+    import random, pickle, itertools, heapq, copy
+    # Helper functions (copied from class, but no self)
+    def get_possible_moves(grid, extended, piston_heads):
+        moves = []
+        for (r, c), dir_char in PISTON_DIRS.items():
+            if not extended[(r, c)]:
+                dr, dc = DIR_OFFSETS[dir_char]
+                head_r, head_c = r + dr, c + dc
+                if not (1 <= head_r <= 4 and 1 <= head_c <= 4):
+                    continue
+                if (head_r, head_c) in piston_heads:
+                    continue
+                cell = grid[head_r][head_c]
+                if cell == '':
+                    moves.append(('extend', r, c))
+                else:
+                    positions = []
+                    rr, cc = head_r, head_c
+                    while True:
+                        if not (1 <= rr <= 4 and 1 <= cc <= 4):
+                            positions = None
+                            break
+                        cell2 = grid[rr][cc]
+                        if (rr, cc) in piston_heads:
+                            positions = None
+                            break
+                        if cell2 in COLOR_CHARS.values():
+                            positions.append((rr, cc))
+                            rr += dr
+                            cc += dc
+                            continue
+                        elif cell2 == '':
+                            break
+                        else:
+                            positions = None
+                            break
+                    if positions is not None:
+                        moves.append(('extend', r, c))
+            else:
+                moves.append(('retract', r, c))
+        return moves
+
+    def apply_move(grid, extended, piston_heads, move):
+        grid = copy.deepcopy(grid)
+        extended = copy.deepcopy(extended)
+        piston_heads = copy.deepcopy(piston_heads)
+        action, r, c = move
+        dir_char = grid[r][c]
+        dr, dc = DIR_OFFSETS[dir_char]
+        head_r, head_c = r + dr, c + dc
+        if action == 'extend':
+            if grid[head_r][head_c] == '':
+                extended[(r, c)] = True
+                piston_heads[(head_r, head_c)] = (r, c)
+            else:
+                chain = []
+                rr, cc = head_r, head_c
+                while True:
+                    if not (1 <= rr <= 4 and 1 <= cc <= 4):
+                        return grid, extended, piston_heads
+                    cell2 = grid[rr][cc]
+                    if (rr, cc) in piston_heads:
+                        return grid, extended, piston_heads
+                    if cell2 in COLOR_CHARS.values():
+                        chain.append((rr, cc))
+                        rr += dr
+                        cc += dc
+                        continue
+                    elif cell2 == '':
+                        break
+                    else:
+                        return grid, extended, piston_heads
+                for rr, cc in reversed(chain):
+                    new_r, new_c = rr + dr, cc + dc
+                    grid[new_r][new_c] = grid[rr][cc]
+                    grid[rr][cc] = ''
+                extended[(r, c)] = True
+                piston_heads[(head_r, head_c)] = (r, c)
+        elif action == 'retract':
+            if (head_r, head_c) in piston_heads:
+                del piston_heads[(head_r, head_c)]
+            sticky_r, sticky_c = head_r + dr, head_c + dc
+            if 1 <= sticky_r <= 4 and 1 <= sticky_c <= 4:
+                block = grid[sticky_r][sticky_c]
+                if block in COLOR_CHARS.values():
+                    grid[head_r][head_c] = block
+                    grid[sticky_r][sticky_c] = ''
+                else:
+                    grid[head_r][head_c] = ''
+            else:
+                grid[head_r][head_c] = ''
+            extended[(r, c)] = False
+        return grid, extended, piston_heads
+
+    def add_patterns_from_solution(path, state_path, pattern_library):
+        for i, key in enumerate(state_path):
+            # Do not save the solved state as a pattern with an empty solution
+            if i == len(path):
+                continue
+            if key not in pattern_library or len(pattern_library[key]) > len(path) - i:
+                pattern_library[key] = path[i:]
+
+    TIMEOUT = 120  # seconds
+    while mining_flag.value:
+        start_time = time.time()
+        # Generate a random puzzle
+        grid = [['' for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+        extended = {k: False for k in PISTON_DIRS}
+        piston_heads = {}
+        for pos, dir_char in PISTON_DIRS.items():
+            r, c = pos
+            grid[r][c] = dir_char
+        edge_positions = []
+        for r in range(1, 5):
+            for c in range(1, 5):
+                if 2 <= r <= 3 and 2 <= c <= 3:
+                    continue
+                if r == 1 or r == 4 or c == 1 or c == 4:
+                    edge_positions.append((r, c))
+        corner_colors = {
+            (1, 1): 'yellow',
+            (1, 4): 'blue',
+            (4, 1): 'red',
+            (4, 4): 'green',
+        }
+        for corner_pos, color in corner_colors.items():
+            grid[corner_pos[0]][corner_pos[1]] = COLOR_CHARS[color]
+            if corner_pos in edge_positions:
+                edge_positions.remove(corner_pos)
+        remaining_blocks = []
+        for color in COLORS:
+            remaining_blocks.extend([COLOR_CHARS[color]] * 2)
+        random.shuffle(edge_positions)
+        for i, pos in enumerate(edge_positions[:len(remaining_blocks)]):
+            grid[pos[0]][pos[1]] = remaining_blocks[i]
+        def flat_grid(grid):
+            return tuple(cell for row in grid for cell in row)
+        visited = set()
+        heap = []
+        counter = itertools.count()
+        def heuristic(grid):
+            group_targets = {
+                'Y': [(1, 1), (1, 2), (2, 1)],
+                'B': [(1, 4), (1, 3), (2, 4)],
+                'R': [(4, 1), (3, 1), (4, 2)],
+                'G': [(4, 4), (3, 4), (4, 3)],
+            }
+            dist_penalty = 0
+            for color, char in COLOR_CHARS.items():
+                for r in range(1, 5):
+                    for c in range(1, 5):
+                        if grid[r][c] == char:
+                            min_dist = min(abs(r - gr) + abs(c - gc) for (gr, gc) in group_targets[char])
+                            dist_penalty += min_dist
+            return dist_penalty
+        heapq.heappush(heap, (heuristic(grid), 0, next(counter), grid, extended, piston_heads, []))
+        visited.add((flat_grid(grid), tuple(sorted(extended.items())), tuple(sorted(piston_heads.items()))))
+        state_path = []
+        found = False
+        while heap:
+            # Failsafe: break if timeout exceeded
+            if time.time() - start_time > TIMEOUT:
+                if worker_id == 0:
+                    print(f"[Mining] Worker {worker_id}: Puzzle timed out after {TIMEOUT} seconds, skipping.")
+                break
+            _, moves_so_far, _, grid, extended, piston_heads, path = heapq.heappop(heap)
+            key = (flat_grid(grid), tuple(sorted(extended.items())), tuple(sorted(piston_heads.items())))
+            state_path.append(key)
+            if moves_so_far > 35:
+                break
+            win = True
+            for r in range(2, 4):
+                for c in range(2, 4):
+                    if grid[r][c] != '':
+                        win = False
+            corner_checks = {
+                'yellow': [(1, 1), (1, 2), (2, 1)],
+                'blue': [(1, 4), (1, 3), (2, 4)],
+                'red': [(4, 1), (3, 1), (4, 2)],
+                'green': [(4, 4), (3, 4), (4, 3)],
+            }
+            for color, positions in corner_checks.items():
+                for r, c in positions:
+                    if grid[r][c] != COLOR_CHARS[color]:
+                        win = False
+            if win:
+                found = True
+                break
+            for move in get_possible_moves(grid, extended, piston_heads):
+                new_grid = [row[:] for row in grid]
+                new_extended = extended.copy()
+                new_piston_heads = piston_heads.copy()
+                new_grid, new_extended, new_piston_heads = apply_move(new_grid, new_extended, new_piston_heads, move)
+                new_key = (flat_grid(new_grid), tuple(sorted(new_extended.items())), tuple(sorted(new_piston_heads.items())))
+                if new_key not in visited:
+                    visited.add(new_key)
+                    heapq.heappush(heap, (moves_so_far + 1 + heuristic(new_grid), moves_so_far + 1, next(counter), new_grid, new_extended, new_piston_heads, path + [move]))
+        if found:
+            # Save all patterns from this solution
+            # Use a file lock to avoid concurrent writes
+            with lock:
+                if os.path.exists(pattern_library_file):
+                    with open(pattern_library_file, "rb") as f:
+                        try:
+                            pattern_library = pickle.load(f)
+                        except Exception:
+                            pattern_library = {}
+                else:
+                    pattern_library = {}
+                add_patterns_from_solution(path, state_path, pattern_library)
+                with open(pattern_library_file, "wb") as f:
+                    pickle.dump(pattern_library, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"[Mining] Worker {worker_id}: Found and saved a solution with {len(path)} moves. Total patterns: {len(pattern_library)}")
+import pickle
+import threading
 import tkinter as tk
 import random
 import copy
@@ -154,42 +375,144 @@ def is_win(grid):
     return True
 
 class PuzzleGame:
+    def toggle_pattern_mining(self):
+        if hasattr(self, 'mining_flag') and self.mining_flag is not None:
+            # Stop mining
+            print("[Mining] Stopping pattern mining...")
+            self.mining_flag.value = False
+            for p in self.mining_processes:
+                p.join(timeout=1)
+            self.mining_flag = None
+            self.mining_processes = []
+            print("[Mining] All mining workers stopped.")
+            self.mine_button.config(text="Start Mining")
+            self.worker_spinbox.config(state="normal")
+        else:
+            # Start mining
+            print("[Mining] Starting pattern mining...")
+            self.mining_flag = multiprocessing.Value('b', True)
+            self.mining_processes = []
+            self.load_pattern_library()
+            self._mining_lock = Lock()
+            # Get number of workers from spinbox
+            try:
+                num_workers = int(self.worker_spinbox.get())
+                if num_workers < 1:
+                    num_workers = 1
+                elif num_workers > 4:
+                    num_workers = 4
+            except Exception:
+                num_workers = 4
+            self.MINING_WORKERS = num_workers
+            for i in range(self.MINING_WORKERS):
+                p = multiprocessing.Process(
+                    target=mining_worker_process,
+                    args=(i, self.mining_flag, self.PATTERN_LIBRARY_FILE, self._mining_lock)
+                )
+                p.daemon = True
+                p.start()
+                self.mining_processes.append(p)
+            self.mine_button.config(text="Stop Mining")
+            self.worker_spinbox.config(state="disabled")
     def __init__(self, root):
         self.root = root
-        self.canvas = tk.Canvas(root, width=CELL_SIZE * GRID_SIZE, height=CELL_SIZE * GRID_SIZE)
-        self.canvas.pack()
-
         self.grid = [['' for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
-        self.extended = {}
-        self.piston_heads = {}  # Tracks which cells are currently piston heads: (r, c) -> (piston_r, piston_c)
-
-        # --- Setup mode state ---
-        self.setup_mode = tk.StringVar(value="Random")
+        self.extended = {k: False for k in PISTON_DIRS}
+        self.piston_heads = {}
         self.manual_setup_active = False
-        self.manual_blocks = {}
+        self.current_solution = None
+        self.pattern_library = {}
+        self.setup_mode = tk.StringVar(value="Random")
+
+        # UI setup
+        self.canvas = tk.Canvas(root, width=GRID_SIZE*CELL_SIZE, height=GRID_SIZE*CELL_SIZE)
+        self.canvas.grid(row=0, column=0, columnspan=6)
+        self.canvas.bind("<Button-1>", self.on_click)
+
+        self.win_label = tk.Label(root, text="Welcome :3", font=("Arial", 14))
+        self.win_label.grid(row=1, column=0, columnspan=6)
+
+        self.solution_label = tk.Label(root, text="", font=("Arial", 12), justify="left")
+        self.solution_label.grid(row=2, column=0, columnspan=6)
+
+        self.start_button = tk.Button(root, text="Start", command=self.start_game)
+        self.start_button.grid(row=3, column=0)
+
+        self.solve_button = tk.Button(root, text="Solve", command=self.show_solution)
+        self.solve_button.grid(row=3, column=1)
+
+
+        self.mine_button = tk.Button(root, text="Start Mining", command=self.toggle_pattern_mining)
+        self.mine_button.grid(row=3, column=2)
+
+        # Add worker count spinbox (max 4)
+        self.worker_spinbox = tk.Spinbox(root, from_=1, to=4, width=3, state="normal")
+        self.worker_spinbox.delete(0, "end")
+        self.worker_spinbox.insert(0, str(self.MINING_WORKERS))
+        self.worker_spinbox.grid(row=3, column=3)
+
+        self.mode_menu = tk.OptionMenu(root, self.setup_mode, "Random", "Manual")
+        self.mode_menu.grid(row=3, column=4)
+
+        self.quit_button = tk.Button(root, text="Quit", command=root.quit)
+        self.quit_button.grid(row=3, column=5)
 
         self.place_pistons()
         self.place_blocks_random()
         self.draw_grid()
+    PATTERN_LIBRARY_FILE = "pattern_library.pkl"
+    MINING_WORKERS = 4  # Number of parallel mining processes
 
-        self.canvas.bind("<Button-1>", self.on_click)
-        self.win_label = tk.Label(root, text="", font=("Arial", 16))
-        self.win_label.pack()
+    def load_pattern_library(self):
+        try:
+            with open(self.PATTERN_LIBRARY_FILE, "rb") as f:
+                self.pattern_library = pickle.load(f)
+            print(f"[PatternLib] Loaded {len(self.pattern_library)} patterns.")
+        except Exception:
+            self.pattern_library = {}
+            print("[PatternLib] No pattern library found, starting fresh.")
 
-        # --- Setup mode controls ---
-        frame = tk.Frame(root)
-        frame.pack()
-        tk.Radiobutton(frame, text="Random", variable=self.setup_mode, value="Random").pack(side="left")
-        tk.Radiobutton(frame, text="Manual", variable=self.setup_mode, value="Manual").pack(side="left")
-        self.start_button = tk.Button(frame, text="Start", command=self.start_game)
-        self.start_button.pack(side="left")
+    def save_pattern_library(self):
+        try:
+            with open(self.PATTERN_LIBRARY_FILE, "wb") as f:
+                pickle.dump(self.pattern_library, f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"[PatternLib] Saved {len(self.pattern_library)} patterns.")
+        except Exception as e:
+            print(f"[PatternLib] Save failed: {e}")
 
-        self.solve_button = tk.Button(root, text="Solve", command=self.show_solution)
-        self.solve_button.pack()
+    def add_patterns_from_solution(self, path, state_path):
+        # For each state along the solution, record the minimal solution from there
+        for i, key in enumerate(state_path):
+            # Do not save the solved state as a pattern with an empty solution
+            if i == len(path):
+                continue
+            new_solution = path[i:]
+            if key not in self.pattern_library or len(self.pattern_library[key]) > len(new_solution):
+                self.pattern_library[key] = new_solution
+                if len(new_solution) > 0:
+                    print(f"[PatternLib] Added/updated pattern: state {i} of {len(state_path)}, solution length {len(new_solution)}. Total patterns: {len(self.pattern_library)}")
 
-        self.solution_label = tk.Label(root, text="", font=("Arial", 12), justify="left")
-        self.solution_label.pack()
-        self.current_solution = None
+
+    # start_pattern_mining and stop_pattern_mining are now handled by toggle_pattern_mining
+
+    def use_pattern_library_in_solver(self, key, grid=None, extended=None, piston_heads=None):
+        # Only use a pattern if the stored solution is not empty and actually solves the puzzle from the current state
+        if hasattr(self, 'pattern_library') and key in self.pattern_library:
+            solution = self.pattern_library[key]
+            if not solution:
+                return None
+            # Optionally, check if applying the solution actually solves the puzzle
+            if grid is not None and extended is not None and piston_heads is not None:
+                test_grid = [row[:] for row in grid]
+                test_extended = extended.copy()
+                test_piston_heads = piston_heads.copy()
+                for move in solution:
+                    test_grid, test_extended, test_piston_heads = self.apply_move(test_grid, test_extended, test_piston_heads, move)
+                if not self.is_win(test_grid):
+                    return None
+            return solution
+        return None
+
     def start_game(self):
         if self.setup_mode.get() == "Random":
             self.place_blocks_random()
@@ -633,6 +956,7 @@ class PuzzleGame:
         visited = set()
         visited.add((flat_grid(initial_grid), tuple(sorted(initial_extended.items())), tuple(sorted(initial_piston_heads.items()))))
         node_count = 0
+        state_path = []
         while heap:
             _, moves_so_far, _, grid, extended, piston_heads, path = heapq.heappop(heap)
             node_count += 1
@@ -644,7 +968,19 @@ class PuzzleGame:
             if self.is_win(grid):
                 elapsed = time.time() - start_time
                 print(f"[Solver] Solution found in {elapsed:.2f} seconds, {moves_so_far} moves.", flush=True)
+                # Save patterns from this solution
+                key = (flat_grid(grid), tuple(sorted(extended.items())), tuple(sorted(piston_heads.items())))
+                state_path.append(key)
+                self.add_patterns_from_solution(path, state_path)
+                self.save_pattern_library()
                 return path
+            key = (flat_grid(grid), tuple(sorted(extended.items())), tuple(sorted(piston_heads.items())))
+            state_path.append(key)
+            # Try pattern library
+            pattern_solution = self.use_pattern_library_in_solver(key, grid, extended, piston_heads)
+            if pattern_solution is not None:
+                print(f"[Solver] Pattern library hit! Using stored solution of length {len(pattern_solution)}.")
+                return path + pattern_solution
             for move in self.get_possible_moves(grid, extended, piston_heads):
                 # Use fast shallow copies for small structures
                 new_grid = [row[:] for row in grid]
@@ -778,7 +1114,7 @@ class PuzzleGame:
 
 def main():
     root = tk.Tk()
-    root.title("Piston Puzzle 6x6")
+    root.title("color puzzle")
     game = PuzzleGame(root)
     root.mainloop()
 
