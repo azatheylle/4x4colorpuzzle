@@ -119,7 +119,7 @@ def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
                 pattern_library[key] = path[i:]
 
     
-    # No timeout
+    TIMEOUT = 1000  # seconds
     while mining_flag.value:
         start_time = time.time()
         # Generate a random puzzle
@@ -171,7 +171,10 @@ def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
             # Check mining_flag frequently for fast stop
             if not mining_flag.value:
                 return
-            # No timeout: do not break for time spent
+            # Timeout: abandon this puzzle if it takes too long
+            if time.time() - start_time > TIMEOUT:
+                print(f"[Mining] Worker {worker_id}: Puzzle abandoned after {TIMEOUT} seconds.")
+                break
             _, moves_so_far, _, grid, extended, piston_heads, path = heapq.heappop(heap)
             key = (flat_grid(grid), tuple(sorted(extended.items())), tuple(sorted(piston_heads.items())))
             state_path.append(key)
