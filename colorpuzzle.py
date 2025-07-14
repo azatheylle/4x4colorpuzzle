@@ -636,7 +636,7 @@ class PuzzleGame:
         while heap:
             _, moves_so_far, _, grid, extended, piston_heads, path = heapq.heappop(heap)
             node_count += 1
-            if node_count % 1000 == 0:
+            if node_count % 5000 == 0:
                 elapsed = time.time() + 1e-9 - start_time
                 print(f"[Solver] {node_count} nodes expanded in {elapsed:.2f} seconds...", flush=True)
             if moves_so_far > max_depth:
