@@ -119,7 +119,7 @@ def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
                 pattern_library[key] = path[i:]
 
     
-    TIMEOUT = 120  # seconds
+    # No timeout
     while mining_flag.value:
         start_time = time.time()
         # Generate a random puzzle
@@ -171,11 +171,7 @@ def mining_worker_process(worker_id, mining_flag, pattern_library_file, lock):
             # Check mining_flag frequently for fast stop
             if not mining_flag.value:
                 return
-            # Failsafe: break if timeout exceeded
-            if time.time() - start_time > TIMEOUT:
-                if worker_id == 0:
-                    print(f"[Mining] Worker {worker_id}: Puzzle timed out after {TIMEOUT} seconds, skipping.")
-                break
+            # No timeout: do not break for time spent
             _, moves_so_far, _, grid, extended, piston_heads, path = heapq.heappop(heap)
             key = (flat_grid(grid), tuple(sorted(extended.items())), tuple(sorted(piston_heads.items())))
             state_path.append(key)
@@ -978,7 +974,7 @@ class PuzzleGame:
         dist = self.heuristic(grid) + bin(ext_mask).count('1')
         return dist
 
-    def solve_puzzle(self, max_depth=35):
+    def solve_puzzle(self, max_depth=65):
         start_time = time.time()
         # Use fast shallow copies for small structures
         initial_grid = [row[:] for row in self.grid]
