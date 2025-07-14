@@ -8,6 +8,11 @@ import functools
 import multiprocessing
 import time
 
+# put this in a batch file to run with pypy / in a notepad file with .bat in the end
+# @echo off
+# "C:\Users\ylle9\Downloads\pypy3.11-v7.3.20-win64\pypy.exe" "c:\Users\ylle9\OneDrive\Dokument\GitHub\tdm\colorpuzzle.py"
+# pause
+
 CELL_SIZE = 60
 GRID_SIZE = 6  # 6x6 total: outer ring pistons, inner 4x4 puzzle
 
@@ -322,19 +327,19 @@ class PuzzleGame:
             if r == 0:
                 label = f"top{c}"
                 x = c * CELL_SIZE + CELL_SIZE // 2
-                y = r * CELL_SIZE + 10
+                y = r * CELL_SIZE + 8  # Move up so it's just above the 'v'
             elif r == 5:
                 label = f"bottom{c}"
                 x = c * CELL_SIZE + CELL_SIZE // 2
-                y = r * CELL_SIZE + CELL_SIZE - 10
+                y = r * CELL_SIZE + CELL_SIZE - 18  # Move up a bit
             elif c == 0:
                 label = f"left{r}"
-                x = c * CELL_SIZE + 10
-                y = r * CELL_SIZE + CELL_SIZE // 2
+                x = c * CELL_SIZE + 18  # Move right a bit
+                y = r * CELL_SIZE + CELL_SIZE // 2 + 18  # Move down below the '>'
             elif c == 5:
                 label = f"right{r}"
-                x = c * CELL_SIZE + CELL_SIZE - 10
-                y = r * CELL_SIZE + CELL_SIZE // 2
+                x = c * CELL_SIZE + CELL_SIZE - 18  # Move left a bit
+                y = r * CELL_SIZE + CELL_SIZE // 2 + 18  # Move down below the '<'
             else:
                 continue
             self.canvas.create_text(
@@ -369,8 +374,8 @@ class PuzzleGame:
         c = event.x // CELL_SIZE
         r = event.y // CELL_SIZE
         if self.manual_setup_active:
-            # Only allow edge positions
-            if 1 <= r <= 4 and 1 <= c <= 4 and (r == 1 or r == 4 or c == 1 or c == 4):
+            # Allow placement anywhere in the 4x4 inner grid
+            if 1 <= r <= 4 and 1 <= c <= 4:
                 current = self.grid[r][c]
                 color_cycle = [''] + [COLOR_CHARS[color] for color in COLORS]
                 idx = color_cycle.index(current) if current in color_cycle else 0
@@ -613,10 +618,12 @@ class PuzzleGame:
         dist = self.heuristic(grid) + bin(ext_mask).count('1')
         return dist
 
-    def solve_puzzle(self, max_depth=60, use_multiprocessing=True):
+    def solve_puzzle(self, max_depth=35):
         start_time = time.time()
         # Use fast shallow copies for small structures
         initial_grid = [row[:] for row in self.grid]
+        def flat_grid(grid):
+            return tuple(cell for row in grid for cell in row)
         initial_extended = self.extended.copy()
         initial_piston_heads = self.piston_heads.copy()
         heap = []
@@ -624,9 +631,6 @@ class PuzzleGame:
         # (priority, moves_so_far, counter, grid, extended, piston_heads, path)
         heapq.heappush(heap, (self.heuristic(initial_grid), 0, next(counter), initial_grid, initial_extended, initial_piston_heads, []))
         visited = set()
-        # Use a flat tuple for the grid in the visited key for faster hashing
-        def flat_grid(grid):
-            return tuple(cell for row in grid for cell in row)
         visited.add((flat_grid(initial_grid), tuple(sorted(initial_extended.items())), tuple(sorted(initial_piston_heads.items()))))
         node_count = 0
         while heap:
@@ -768,61 +772,9 @@ class PuzzleGame:
         new_piston_heads_frozen = frozenset(piston_heads.items())
         return new_grid_tuple, new_ext_mask, new_piston_heads_frozen
 
-    def solve_puzzle_parallel(self, max_depth=60, n_workers=2):
-        import time
-        start_time = time.time()
-        # Optional: Use multiprocessing to parallelize the search (for advanced users)
-        # This is a simple parallel wrapper that launches several processes with different first moves
-        initial_grid = copy.deepcopy(self.grid)
-        initial_extended = copy.deepcopy(self.extended)
-        initial_piston_heads = copy.deepcopy(self.piston_heads)
-        first_moves = self.get_possible_moves(initial_grid, initial_extended, initial_piston_heads)
-        if not first_moves:
-            return None
-        with multiprocessing.Pool(processes=n_workers) as pool:
-            results = []
-            for move in first_moves:
-                args = (self, initial_grid, initial_extended, initial_piston_heads, move, max_depth)
-                results.append(pool.apply_async(_worker_solve_branch, args))
-            for r in results:
-                res = r.get()
-                if res:
-                    elapsed = time.time() - start_time
-                    print(f"[Parallel Solver] Solution found in {elapsed:.2f} seconds.")
-                    return res
-        elapsed = time.time() - start_time
-        print(f"[Parallel Solver] No solution found in {elapsed:.2f} seconds.")
-        return None
 
-def _worker_solve_branch(self, grid, extended, piston_heads, move, max_depth):
-    import time
-    start_time = time.time()
-    # Worker for parallel solve: do the first move, then run normal solve_puzzle
-    new_grid, new_extended, new_piston_heads = self.apply_move(grid, extended, piston_heads, move)
-    heap = []
-    counter = itertools.count()
-    state_key = self.compact_state_key(new_grid, new_extended)
-    heapq.heappush(heap, (self.cached_heuristic(*state_key), 1, next(counter), new_grid, new_extended, new_piston_heads, [move]))
-    visited = set()
-    visited.add(state_key)
-    while heap:
-        _, moves_so_far, _, grid, extended, piston_heads, path = heapq.heappop(heap)
-        if moves_so_far > max_depth:
-            continue
-        if self.is_win(grid):
-            elapsed = time.time() - start_time
-            print(f"[Worker] Solution found in {elapsed:.2f} seconds, {moves_so_far} moves.")
-            return path
-        for move in self.get_possible_moves(grid, extended, piston_heads):
-            new_grid, new_extended, new_piston_heads = self.apply_move(grid, extended, piston_heads, move)
-            key = self.compact_state_key(new_grid, new_extended)
-            if key not in visited:
-                visited.add(key)
-                priority = moves_so_far + 1 + self.cached_heuristic(*key)
-                heapq.heappush(heap, (priority, moves_so_far + 1, next(counter), new_grid, new_extended, new_piston_heads, path + [move]))
-    elapsed = time.time() - start_time
-    print(f"[Worker] No solution found in {elapsed:.2f} seconds.")
-    return None
+
+
 
 def main():
     root = tk.Tk()
