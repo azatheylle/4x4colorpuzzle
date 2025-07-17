@@ -6,6 +6,15 @@ import itertools
 import functools
 import time
 
+# To run with PyPy for better performance:
+# 1. Download PyPy from https://pypy.org/download.html
+# 2. Create a new text file and save it as "run_colorpuzzle.bat"
+# 3. Add these lines to the .bat file:
+# @echo off
+# "C:\path\to\your\pypy.exe" "c:\path\to\your\colorpuzzle.py"
+# pause
+# 4. Replace the paths with your actual PyPy and colorpuzzle.py locations
+# 5. Double-click the .bat file to run the game
 
 CELL_SIZE = 60
 GRID_SIZE = 6  # 6x6 total: outer ring pistons, inner 4x4 puzzle
