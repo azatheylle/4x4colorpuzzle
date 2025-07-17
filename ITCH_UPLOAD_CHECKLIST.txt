@@ -1,0 +1,46 @@
+🎯 ITCH.IO UPLOAD CHECKLIST 🎯
+
+BEFORE UPLOADING:
+☐ Test the executable on a clean Windows machine
+☐ Verify all features work (random puzzles, manual setup, solver)
+☐ Check file size (should be ~10MB)
+☐ Ensure README.txt is included and readable
+
+FILES TO UPLOAD:
+☐ 4x4ColorPuzzle-Itch.zip (contains game + README)
+
+ITCH.IO PAGE SETUP:
+☐ Upload the zip file
+☐ Set as Windows executable
+☐ Add compelling screenshots
+☐ Write engaging description (use ITCH_DESCRIPTION.md)
+☐ Add relevant tags (puzzle, logic, strategy, etc.)
+☐ Set appropriate content rating
+☐ Choose pricing model
+☐ Enable comments and ratings
+
+RECOMMENDED SCREENSHOTS TO TAKE:
+1. Main game interface with a partially solved puzzle
+2. Random puzzle generation screen
+3. Manual setup mode in action
+4. AI solver showing step-by-step solution
+5. Victory screen
+6. Color reference showing corner assignments
+
+POST-LAUNCH:
+☐ Share on social media
+☐ Post in relevant communities (r/puzzlegames, puzzle forums)
+☐ Consider creating development blog posts
+☐ Respond to comments and feedback
+☐ Monitor downloads and engagement
+
+FUTURE UPDATES TO CONSIDER:
+☐ Difficulty levels (different grid sizes?)
+☐ Time challenges
+☐ Puzzle sharing system
+☐ Undo/redo functionality
+☐ Sound effects and music
+☐ Achievement system
+☐ Statistics tracking
+
+Your game is ready for itch.io! 🚀

@@ -1,0 +1,9 @@
+# Requirements for 4x4 Color Puzzle Game
+# This game only requires Python's built-in tkinter library
+# No additional packages needed for basic functionality
+
+# Optional: For creating executable
+pyinstaller>=5.0
+
+# Optional: For better performance (alternative Python interpreter)
+# Note: PyPy installation instructions are in the game comments

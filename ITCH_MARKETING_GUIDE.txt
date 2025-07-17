@@ -1,0 +1,54 @@
+GAME TAGS FOR ITCH.IO:
+puzzle, logic, strategy, blocks, colors, brain-teaser, family-friendly, single-player, windows, indie
+
+SUGGESTED PRICING:
+- Free (great for building audience)
+- Pay-what-you-want (minimum $0, suggested $2-5)
+- Fixed price: $2.99 - $4.99
+
+ITCH.IO PAGE SUGGESTIONS:
+
+TITLE: "4x4 Color Puzzle"
+
+SUBTITLE: "A strategic block-pushing puzzle game"
+
+SHORT DESCRIPTION:
+"Use pistons to push colored blocks into their corners in this challenging logic puzzle!"
+
+CLASSIFICATION:
+- Kind: Game
+- Platform: Windows
+- Tools: Python, tkinter
+- Genre: Puzzle
+- Average session: A few minutes
+- Languages: English
+- Inputs: Mouse
+- Accessibility: High contrast, Color blind friendly (uses letters + colors)
+
+FEATURES TO HIGHLIGHT:
+✅ No installation required - just download and play
+✅ Infinite replayability with random puzzle generation
+✅ Built-in AI solver with step-by-step solutions
+✅ Manual puzzle creation mode
+✅ Clean, intuitive interface
+✅ Lightweight (under 10MB download)
+✅ Works on any Windows computer
+✅ Family-friendly puzzle fun
+
+COMMUNITY FEATURES:
+- Enable comments for feedback
+- Enable ratings
+- Consider creating a devlog about the AI solver development
+- Post updates about new features
+
+MONETIZATION OPTIONS:
+- Free version to build audience
+- Optional "tip jar" for supporters
+- Future: Premium version with advanced features
+- Future: Mobile version
+
+MARKETING TIPS:
+- Post in puzzle game communities
+- Share development process in devlogs
+- Create animated GIFs showing gameplay
+- Consider streaming puzzle solving sessions
