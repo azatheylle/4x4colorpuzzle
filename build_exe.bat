@@ -16,7 +16,7 @@ if errorlevel 1 (
 )
 
 REM Create executable with PyInstaller using the spec file
-python -m PyInstaller 4x4ColorPuzzle.spec
+python -m PyInstaller colorpuzzle.spec
 
 echo.
 echo Build complete! 
